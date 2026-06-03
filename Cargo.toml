@@ -1,6 +1,6 @@
 [package]
 name = "sizefilter"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Human-readable size string parsing, formatting, and filtering with comparison operators (e.g., \">=1GB\", \"<500KB\")"

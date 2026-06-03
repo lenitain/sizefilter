@@ -41,9 +41,11 @@
 //! assert_eq!(parse_size("1MB").unwrap(), 1_048_576);   // megabyte
 //! assert_eq!(parse_size("1GB").unwrap(), 1_073_741_824); // gigabyte
 //! assert_eq!(parse_size("1TB").unwrap(), 1_099_511_627_776); // terabyte
+//! assert_eq!(parse_size("1PB").unwrap(), 1_125_899_906_842_624); // petabyte
+//! assert_eq!(parse_size("1EB").unwrap(), 1_152_921_504_606_846_976); // exabyte
 //! ```
 //!
-//! Short suffixes (`K`, `M`, `G`, `T`) also work:
+//! Short suffixes (`K`, `M`, `G`, `T`, `P`, `E`) also work:
 //!
 //! ```
 //! use sizefilter::parse_size;
@@ -52,6 +54,8 @@
 //! assert_eq!(parse_size("1M").unwrap(), 1_048_576);
 //! assert_eq!(parse_size("1G").unwrap(), 1_073_741_824);
 //! assert_eq!(parse_size("1T").unwrap(), 1_099_511_627_776);
+//! assert_eq!(parse_size("1P").unwrap(), 1_125_899_906_842_624);
+//! assert_eq!(parse_size("1E").unwrap(), 1_152_921_504_606_846_976);
 //! ```
 //!
 //! Negative sizes and decimals are supported:

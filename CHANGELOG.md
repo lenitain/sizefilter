@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-05
+
+### Fixed
+
+- `parse_size` uses integer arithmetic instead of f64 intermediate values to avoid floating-point precision issues (e.g., 1.5GB parses precisely)
+
 ### Added
+
+- Support PB (pebibyte) and EB (exbibyte) unit parsing (long/short suffixes: PB/P, EB/E)
+- Unit tests for PB/EB parsing and decimal precision
+- Float precision loss demonstration test (`test_float_precision_loss`)
+
+## [0.1.1] - 2026-06-04
 
 - GitHub Actions CI workflow (build + test + fmt + clippy)
 - Initial test suite for size parsing, filtering, formatting, and arithmetic.

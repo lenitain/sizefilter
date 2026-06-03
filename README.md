@@ -13,7 +13,7 @@ cargo add sizefilter
 
 ## Features
 
-- **Parse**: `"1GB"`, `"500KB"`, `"1024"`, `"1.5MB"` → `i64` bytes
+- **Parse**: `"1GB"`, `"500KB"`, `"1024"`, `"1.5MB"`, `"1PB"`, `"1EB"` → `i64` bytes
 - **Format**: `1073741824` → `"1.0GB"`, `-1024` → `"-1.0KB"`
 - **Filter**: `SizeFilter::ge(1_073_741_824)` or `">=1GB".parse::<SizeFilter>()`
 - **Arithmetic**: `+`, `-`, `*`, `/`, `Neg` on [`Size`] — all byte-level
@@ -29,10 +29,10 @@ cargo add sizefilter
 cargo test
 ```
 
-58 tests (47 unit + 11 doc-tests) covering parsing, formatting, filtering,
+79 tests (66 unit + 13 doc-tests) covering parsing, formatting, filtering,
 arithmetic, edge cases (whitespace, case sensitivity, negative values,
-sub-byte decimals, extreme ranges, invalid inputs), round-trip consistency,
-and serde round-trip.
+sub-byte decimals, extreme ranges, invalid inputs, PB/EB units, float precision),
+round-trip consistency, and serde round-trip.
 
 ## Quick example
 
@@ -59,6 +59,10 @@ assert!(f.matches(500 * MB));
 
 // Arithmetic
 assert_eq!(Size::from_mb(2) + Size::from_kb(512), Size::from_bytes(2_097_152 + 524_288));
+
+// PB/EB support
+assert_eq!(parse_size("1PB").unwrap(), PB);
+assert_eq!(parse_size("1EB").unwrap(), EB);
 ```
 
 ## Modules

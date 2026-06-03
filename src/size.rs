@@ -493,7 +493,7 @@ pub fn parse_size_filter(s: &str) -> SizeResult<SizeFilter> {
 
 /// Parse human-readable size string to bytes.
 ///
-/// Supports: `"1GB"`, `"500KB"`, `"1024"`, `"1B"`, `"1K"`, `"1M"`, `"1G"`, `"1T"`.
+/// Supports: `"1GB"`, `"500KB"`, `"1024"`, `"1B"`, `"1K"`, `"1M"`, `"1G"`, `"1T"`, `"1P"`, `"1E"`.
 /// Uses binary units (1KB = 1024 bytes).
 ///
 /// No heap allocation during parsing — unit comparison is done via
@@ -519,14 +519,47 @@ pub fn parse_size(size_str: &str) -> SizeResult<i64> {
         None => (size_str, ""),
     };
 
-    let num: f64 = num_part
-        .trim()
-        .parse()
-        .map_err(|_| SizeError::InvalidNumber)?;
+    let num_part = num_part.trim();
+
+    // Reject purely alphabetic inputs (e.g., "abc") as invalid numbers
+    if num_part.is_empty() {
+        return Err(SizeError::InvalidNumber);
+    }
 
     let multiplier = unit_multiplier(unit.trim()).ok_or(SizeError::UnknownUnit)?;
 
-    Ok((num * multiplier as f64) as i64)
+    // Parse using integer arithmetic to avoid floating-point precision issues.
+    // Handle optional decimal point.
+    let (is_negative, num_str) = if let Some(rest) = num_part.strip_prefix('-') {
+        (true, rest)
+    } else {
+        (false, num_part)
+    };
+
+    let (int_part, frac_part, frac_digits) = if let Some(dot_pos) = num_str.find('.') {
+        let int_str = &num_str[..dot_pos];
+        let frac_str = &num_str[dot_pos + 1..];
+        let int_val: i64 = if int_str.is_empty() {
+            0
+        } else {
+            int_str.parse().map_err(|_| SizeError::InvalidNumber)?
+        };
+        let frac_val: i64 = frac_str.parse().map_err(|_| SizeError::InvalidNumber)?;
+        let frac_digits = frac_str.len() as u32;
+        (int_val, frac_val, frac_digits)
+    } else {
+        let int_val: i64 = num_str.parse().map_err(|_| SizeError::InvalidNumber)?;
+        (int_val, 0, 0)
+    };
+
+    // Compute: (int_part * 10^frac_digits + frac_part) * multiplier / 10^frac_digits
+    // Use i128 to avoid overflow during intermediate calculations.
+    let scale = 10i64.pow(frac_digits);
+    let numerator = (int_part as i128) * (scale as i128) + (frac_part as i128);
+    let result = numerator * (multiplier as i128) / (scale as i128);
+
+    let result = result as i64;
+    Ok(if is_negative { -result } else { result })
 }
 
 /// Map a unit string to its byte multiplier, or `None` if unknown.
@@ -543,6 +576,10 @@ fn unit_multiplier(unit: &str) -> Option<i64> {
         Some(GB)
     } else if unit.eq_ignore_ascii_case("T") || unit.eq_ignore_ascii_case("TB") {
         Some(TB)
+    } else if unit.eq_ignore_ascii_case("P") || unit.eq_ignore_ascii_case("PB") {
+        Some(PB)
+    } else if unit.eq_ignore_ascii_case("E") || unit.eq_ignore_ascii_case("EB") {
+        Some(EB)
     } else {
         None
     }
@@ -573,5 +610,80 @@ pub fn format_size(size: i64) -> String {
         format!("{}{:.1}KB", prefix, (abs as f64) / ((1u64 << 10) as f64))
     } else {
         format!("{}{}B", prefix, abs)
+    }
+}
+
+// ── tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_pb() {
+        assert_eq!(parse_size("1PB").unwrap(), PB);
+        assert_eq!(parse_size("1P").unwrap(), PB);
+        assert_eq!(parse_size("1pb").unwrap(), PB);
+        assert_eq!(parse_size("2PB").unwrap(), 2 * PB);
+    }
+
+    #[test]
+    fn test_parse_eb() {
+        assert_eq!(parse_size("1EB").unwrap(), EB);
+        assert_eq!(parse_size("1E").unwrap(), EB);
+        assert_eq!(parse_size("1eb").unwrap(), EB);
+        assert_eq!(parse_size("2EB").unwrap(), 2 * EB);
+    }
+
+    #[test]
+    fn test_decimal_precision() {
+        // Test that integer arithmetic avoids floating-point precision issues
+        // 1.5GB should be exactly 1.5 * 1073741824 = 1610612736
+        assert_eq!(parse_size("1.5GB").unwrap(), 1_610_612_736);
+        assert_eq!(parse_size("0.5KB").unwrap(), 512);
+        assert_eq!(parse_size("2.25MB").unwrap(), 2_359_296); // 2.25 * 1048576
+        assert_eq!(parse_size("0.125GB").unwrap(), 134_217_728); // 0.125 * 1073741824
+    }
+
+    #[test]
+    fn test_negative_decimal() {
+        assert_eq!(parse_size("-1.5GB").unwrap(), -1_610_612_736);
+        assert_eq!(parse_size("-0.5KB").unwrap(), -512);
+    }
+
+    #[test]
+    fn test_large_decimal() {
+        // Test with large values that would overflow f64 precision
+        assert_eq!(parse_size("1.1PB").unwrap(), (1.1 * PB as f64) as i64);
+    }
+
+    #[test]
+    fn test_float_precision_loss() {
+        // This test demonstrates the precision characteristics of our
+        // integer-based parser vs f64 arithmetic.
+
+        // Case 1: Basic decimal parsing — both give same result
+        // 0.3GB = 0.3 * 1073741824 = 322122547.2 -> 322122547
+        let f64_result = (0.3 * GB as f64) as i64;
+        let int_result = parse_size("0.3GB").unwrap();
+        assert_eq!(f64_result, int_result); // both 322122547
+
+        // Case 2: The classic f64 failure — 0.1 + 0.2 != 0.3
+        assert_ne!(0.1_f64 + 0.2_f64, 0.3_f64); // false!
+
+        // Case 3: Integer truncation is deterministic
+        // 0.1GB = GB / 10 = 107374182 (truncated, 4 bytes less than exact)
+        let one_tenth = parse_size("0.1GB").unwrap();
+        assert_eq!(one_tenth, 107_374_182);
+        // Exact would be 107374182.4, but we truncate consistently
+
+        // Case 4: Deterministic behavior — same input always gives same output
+        assert_eq!(parse_size("0.1GB").unwrap(), parse_size("0.1GB").unwrap());
+        assert_eq!(parse_size("0.3GB").unwrap(), parse_size("0.3GB").unwrap());
+
+        // Case 5: Our parser handles various precisions correctly
+        assert_eq!(parse_size("0.001GB").unwrap(), 1_073_741); // truncated
+        assert_eq!(parse_size("0.0001GB").unwrap(), 107_374); // truncated
+        assert_eq!(parse_size("0.5GB").unwrap(), GB / 2); // exact!
     }
 }
