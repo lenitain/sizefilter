@@ -23,8 +23,8 @@
 //!
 //! // Parse a filter expression
 //! let f: SizeFilter = ">=1GB".parse().unwrap();
-//! assert_eq!(f.op, SizeOp::Ge);
-//! assert_eq!(f.bytes, GB);
+//! assert_eq!(f.op(), SizeOp::Ge);
+//! assert_eq!(f.bytes(), GB);
 //! assert!(f.matches(GB + 1));
 //! ```
 //!
@@ -156,7 +156,7 @@
 //! use sizefilter::{parse_size_filter, SizeOp};
 //!
 //! let f = parse_size_filter("<500KB").unwrap();
-//! assert_eq!(f.op, SizeOp::Lt);
+//! assert_eq!(f.op(), SizeOp::Lt);
 //! ```
 //!
 //! # Serde support
@@ -197,7 +197,7 @@ pub use size::*;
 /// let f: SizeFilter = ">=500MB".parse().unwrap();
 /// ```
 pub mod prelude {
-    pub use super::{EB, GB, KB, MB, PB, TB};
-    pub use super::{Size, SizeError, SizeFilter, SizeOp, SizeResult};
-    pub use super::{format_size, parse_size, parse_size_filter};
+    pub use crate::{EB, GB, KB, MB, PB, TB};
+    pub use crate::{Size, SizeError, SizeFilter, SizeOp, SizeResult};
+    pub use crate::{format_size, parse_size, parse_size_filter};
 }

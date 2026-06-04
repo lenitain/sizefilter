@@ -1,40 +1,30 @@
 # sizefilter
 
+Human-readable size string parsing, formatting, arithmetic, and filtering with comparison operators.
+
 [![Crates.io](https://img.shields.io/crates/v/sizefilter.svg)](https://crates.io/crates/sizefilter)
 [![Docs.rs](https://docs.rs/sizefilter/badge.svg)](https://docs.rs/sizefilter)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/lenitain/sizefilter/actions/workflows/ci.yml/badge.svg)](https://github.com/lenitain/sizefilter/actions/workflows/ci.yml)
 
-Human-readable size string parsing, formatting, **arithmetic**, and **filtering with comparison operators** — `">=1GB"`, `"<500KB"`, `"=0"`.
+## Overview
 
-## Installation
+**sizefilter** provides human-readable size string parsing, formatting, arithmetic, and filtering with comparison operators. It supports binary units (1 KB = 1024 B) matching filesystem conventions, with zero heap allocation in parsing and error paths. The library offers comprehensive support for sizes from bytes to exabytes with intuitive string representations.
 
-```bash
-cargo add sizefilter
+### Why sizefilter?
+
+Unlike other size parsing libraries that only handle basic conversions, **sizefilter** provides a complete solution for working with human-readable sizes in Rust. It supports comparison operators (`>=1GB`, `<500KB`, `=0`), arithmetic operations, and seamless integration with serde for configuration files. The library's use of `i64` (not `u64`) allows for negative sizes, and its zero-allocation design makes it suitable for performance-critical applications. For tools that need to parse, compare, or manipulate file sizes from user input, sizefilter offers the most ergonomic and complete solution.
+
+## Usage
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+sizefilter = "0.1.2"
 ```
 
-## Features
-
-- **Parse**: `"1GB"`, `"500KB"`, `"1024"`, `"1.5MB"`, `"1PB"`, `"1EB"` → `i64` bytes
-- **Format**: `1073741824` → `"1.0GB"`, `-1024` → `"-1.0KB"`
-- **Filter**: `SizeFilter::ge(1_073_741_824)` or `">=1GB".parse::<SizeFilter>()`
-- **Arithmetic**: `+`, `-`, `*`, `/`, `Neg` on [`Size`] — all byte-level
-- **Serde** (optional): serialize/deserialize [`Size`] & [`SizeFilter`] as strings
-- **`i64`** (not `u64`) — negative sizes supported
-- **Zero heap allocation** in parsing and error paths — `SizeError` is a ZST in `.rodata`
-- **Binary units** (1 KB = 1024 B), matching filesystem convention
-- **`#[must_use]`** annotations throughout — no silently ignored results
-
-## Testing
-
-```bash
-cargo test
-```
-
-79 tests (66 unit + 13 doc-tests) covering parsing, formatting, filtering,
-arithmetic, edge cases (whitespace, case sensitivity, negative values,
-sub-byte decimals, extreme ranges, invalid inputs, PB/EB units, float precision),
-round-trip consistency, and serde round-trip.
-
-## Quick example
+### Quick start
 
 ```rust
 use sizefilter::prelude::*;
@@ -59,48 +49,4 @@ assert!(f.matches(500 * MB));
 
 // Arithmetic
 assert_eq!(Size::from_mb(2) + Size::from_kb(512), Size::from_bytes(2_097_152 + 524_288));
-
-// PB/EB support
-assert_eq!(parse_size("1PB").unwrap(), PB);
-assert_eq!(parse_size("1EB").unwrap(), EB);
 ```
-
-## Modules
-
-```
-src/
-├── lib.rs    — Crate root, prelude module
-└── size.rs   — Size, SizeOp, SizeFilter, SizeError, constants, all ops
-```
-
-## Prelude
-
-`use sizefilter::prelude::*` brings in the most common types and functions:
-
-```rust
-use sizefilter::prelude::*;
-// Now available:
-//   Size, SizeFilter, SizeOp, SizeError, SizeResult
-//   KB, MB, GB, TB, PB, EB
-//   parse_size(), format_size(), parse_size_filter()
-```
-
-## Error handling
-
-All fallible operations return `Result<T, SizeError>`. The `SizeError` enum is
-`#[non_exhaustive]` — new variants may be added in minor releases.
-
-```rust
-use sizefilter::{parse_size, SizeError};
-
-match parse_size("1XB") {
-    Err(SizeError::UnknownUnit) => println!("unknown unit"),
-    Err(SizeError::InvalidNumber) => println!("bad number"),
-    Err(SizeError::EmptyInput) => println!("empty"),
-    _ => {}
-}
-```
-
-## License
-
-[MIT License](./LICENSE)

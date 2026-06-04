@@ -5,8 +5,8 @@ use sizefilter::prelude::*;
 #[test]
 fn from_str() {
     let f: SizeFilter = ">=1GB".parse().unwrap();
-    assert_eq!(f.op, SizeOp::Ge);
-    assert_eq!(f.bytes, GB);
+    assert_eq!(f.op(), SizeOp::Ge);
+    assert_eq!(f.bytes(), GB);
 }
 
 #[test]
@@ -58,8 +58,8 @@ fn roundtrip_tostring_parse() {
     for f in cases {
         let s = f.to_string();
         let parsed: SizeFilter = s.parse().unwrap();
-        assert_eq!(parsed.op, f.op, "op mismatch for {}", s);
-        assert_eq!(parsed.bytes, f.bytes, "bytes mismatch for {}", s);
+        assert_eq!(parsed.op(), f.op(), "op mismatch for {}", s);
+        assert_eq!(parsed.bytes(), f.bytes(), "bytes mismatch for {}", s);
     }
 }
 
@@ -68,38 +68,38 @@ fn roundtrip_tostring_parse() {
 #[test]
 fn parse_ge() {
     let f = parse_size_filter(">=1GB").unwrap();
-    assert_eq!(f.op, SizeOp::Ge);
-    assert_eq!(f.bytes, GB);
+    assert_eq!(f.op(), SizeOp::Ge);
+    assert_eq!(f.bytes(), GB);
 }
 
 #[test]
 fn parse_gt() {
     let f = parse_size_filter(">500MB").unwrap();
-    assert_eq!(f.op, SizeOp::Gt);
-    assert_eq!(f.bytes, 500 * MB);
+    assert_eq!(f.op(), SizeOp::Gt);
+    assert_eq!(f.bytes(), 500 * MB);
 }
 
 #[test]
 fn parse_le() {
     let f = parse_size_filter("<=100KB").unwrap();
-    assert_eq!(f.op, SizeOp::Le);
-    assert_eq!(f.bytes, 100 * KB);
+    assert_eq!(f.op(), SizeOp::Le);
+    assert_eq!(f.bytes(), 100 * KB);
 }
 
 #[test]
 fn parse_lt() {
     let f = parse_size_filter("<10MB").unwrap();
-    assert_eq!(f.op, SizeOp::Lt);
+    assert_eq!(f.op(), SizeOp::Lt);
 }
 
 #[test]
 fn parse_eq() {
     let f = parse_size_filter("=0").unwrap();
-    assert_eq!(f.op, SizeOp::Eq);
-    assert_eq!(f.bytes, 0);
+    assert_eq!(f.op(), SizeOp::Eq);
+    assert_eq!(f.bytes(), 0);
     let f = parse_size_filter("=1KB").unwrap();
-    assert_eq!(f.op, SizeOp::Eq);
-    assert_eq!(f.bytes, KB);
+    assert_eq!(f.op(), SizeOp::Eq);
+    assert_eq!(f.bytes(), KB);
 }
 
 #[test]
@@ -114,34 +114,34 @@ fn no_operator_errors() {
 #[test]
 fn whitespace() {
     let f = parse_size_filter("  >=  1MB  ").unwrap();
-    assert_eq!(f.op, SizeOp::Ge);
-    assert_eq!(f.bytes, MB);
+    assert_eq!(f.op(), SizeOp::Ge);
+    assert_eq!(f.bytes(), MB);
     let f = parse_size_filter("  < 500KB  ").unwrap();
-    assert_eq!(f.op, SizeOp::Lt);
-    assert_eq!(f.bytes, 500 * KB);
+    assert_eq!(f.op(), SizeOp::Lt);
+    assert_eq!(f.bytes(), 500 * KB);
 }
 
 #[test]
 fn negative() {
     let f = parse_size_filter(">-1KB").unwrap();
-    assert_eq!(f.op, SizeOp::Gt);
-    assert_eq!(f.bytes, -KB);
+    assert_eq!(f.op(), SizeOp::Gt);
+    assert_eq!(f.bytes(), -KB);
     let f = parse_size_filter("<=-1024").unwrap();
-    assert_eq!(f.op, SizeOp::Le);
-    assert_eq!(f.bytes, -1024);
+    assert_eq!(f.op(), SizeOp::Le);
+    assert_eq!(f.bytes(), -1024);
     let f = parse_size_filter("<=0").unwrap();
-    assert_eq!(f.op, SizeOp::Le);
-    assert_eq!(f.bytes, 0);
+    assert_eq!(f.op(), SizeOp::Le);
+    assert_eq!(f.bytes(), 0);
 }
 
 #[test]
 fn decimal() {
     let f = parse_size_filter(">=1.5KB").unwrap();
-    assert_eq!(f.op, SizeOp::Ge);
-    assert_eq!(f.bytes, 1536);
+    assert_eq!(f.op(), SizeOp::Ge);
+    assert_eq!(f.bytes(), 1536);
     let f = parse_size_filter("<0.5MB").unwrap();
-    assert_eq!(f.op, SizeOp::Lt);
-    assert_eq!(f.bytes, 524288);
+    assert_eq!(f.op(), SizeOp::Lt);
+    assert_eq!(f.bytes(), 524288);
 }
 
 #[test]

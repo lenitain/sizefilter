@@ -26,7 +26,7 @@ pub const EB: i64 = 1 << 60;
 // ── SizeOp ───────────────────────────────────────────────────────────────────
 
 /// Size comparison operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SizeOp {
     /// Greater than (`>`)
     Gt,
@@ -75,8 +75,8 @@ impl fmt::Display for SizeOp {
 /// A size filter with operator (e.g., `>=1GB`, `<500KB`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SizeFilter {
-    pub op: SizeOp,
-    pub bytes: i64,
+    op: SizeOp,
+    bytes: i64,
 }
 
 impl SizeFilter {
@@ -85,6 +85,20 @@ impl SizeFilter {
     #[must_use]
     pub const fn new(op: SizeOp, bytes: i64) -> Self {
         SizeFilter { op, bytes }
+    }
+
+    /// Get the comparison operator.
+    #[inline]
+    #[must_use]
+    pub const fn op(self) -> SizeOp {
+        self.op
+    }
+
+    /// Get the byte threshold.
+    #[inline]
+    #[must_use]
+    pub const fn bytes(self) -> i64 {
+        self.bytes
     }
 
     /// Filter: `value > threshold`.
@@ -474,19 +488,17 @@ pub type SizeResult<T> = Result<T, SizeError>;
 /// or [`SizeError`] variants from size parsing.
 pub fn parse_size_filter(s: &str) -> SizeResult<SizeFilter> {
     let s = s.trim();
-    let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
-        (SizeOp::Ge, r)
-    } else if let Some(r) = s.strip_prefix("<=") {
-        (SizeOp::Le, r)
-    } else if let Some(r) = s.strip_prefix('>') {
-        (SizeOp::Gt, r)
-    } else if let Some(r) = s.strip_prefix('<') {
-        (SizeOp::Lt, r)
-    } else if let Some(r) = s.strip_prefix('=') {
-        (SizeOp::Eq, r)
-    } else {
-        return Err(SizeError::MissingOperator);
-    };
+    let prefixes: &[(&str, SizeOp)] = &[
+        (">=", SizeOp::Ge),
+        ("<=", SizeOp::Le),
+        (">", SizeOp::Gt),
+        ("<", SizeOp::Lt),
+        ("=", SizeOp::Eq),
+    ];
+    let (op, rest) = prefixes
+        .iter()
+        .find_map(|&(prefix, op)| s.strip_prefix(prefix).map(|r| (op, r)))
+        .ok_or(SizeError::MissingOperator)?;
     let bytes = parse_size(rest)?;
     Ok(SizeFilter { op, bytes })
 }
@@ -545,7 +557,7 @@ pub fn parse_size(size_str: &str) -> SizeResult<i64> {
             int_str.parse().map_err(|_| SizeError::InvalidNumber)?
         };
         let frac_val: i64 = frac_str.parse().map_err(|_| SizeError::InvalidNumber)?;
-        let frac_digits = frac_str.len() as u32;
+        let frac_digits = u32::try_from(frac_str.len()).map_err(|_| SizeError::InvalidNumber)?;
         (int_val, frac_val, frac_digits)
     } else {
         let int_val: i64 = num_str.parse().map_err(|_| SizeError::InvalidNumber)?;
@@ -555,10 +567,10 @@ pub fn parse_size(size_str: &str) -> SizeResult<i64> {
     // Compute: (int_part * 10^frac_digits + frac_part) * multiplier / 10^frac_digits
     // Use i128 to avoid overflow during intermediate calculations.
     let scale = 10i64.pow(frac_digits);
-    let numerator = (int_part as i128) * (scale as i128) + (frac_part as i128);
-    let result = numerator * (multiplier as i128) / (scale as i128);
+    let numerator = i128::from(int_part) * i128::from(scale) + i128::from(frac_part);
+    let result = numerator * i128::from(multiplier) / i128::from(scale);
 
-    let result = result as i64;
+    let result = i64::try_from(result).map_err(|_| SizeError::InvalidNumber)?;
     Ok(if is_negative { -result } else { result })
 }
 
@@ -566,19 +578,20 @@ pub fn parse_size(size_str: &str) -> SizeResult<i64> {
 ///
 /// Comparison is ASCII case-insensitive — no allocation.
 fn unit_multiplier(unit: &str) -> Option<i64> {
-    if unit.is_empty() || unit.eq_ignore_ascii_case("B") {
+    // Use eq_ignore_ascii_case to avoid heap allocation from to_ascii_uppercase()
+    if unit.is_empty() || unit.eq_ignore_ascii_case("b") {
         Some(1)
-    } else if unit.eq_ignore_ascii_case("K") || unit.eq_ignore_ascii_case("KB") {
+    } else if unit.eq_ignore_ascii_case("k") || unit.eq_ignore_ascii_case("kb") {
         Some(KB)
-    } else if unit.eq_ignore_ascii_case("M") || unit.eq_ignore_ascii_case("MB") {
+    } else if unit.eq_ignore_ascii_case("m") || unit.eq_ignore_ascii_case("mb") {
         Some(MB)
-    } else if unit.eq_ignore_ascii_case("G") || unit.eq_ignore_ascii_case("GB") {
+    } else if unit.eq_ignore_ascii_case("g") || unit.eq_ignore_ascii_case("gb") {
         Some(GB)
-    } else if unit.eq_ignore_ascii_case("T") || unit.eq_ignore_ascii_case("TB") {
+    } else if unit.eq_ignore_ascii_case("t") || unit.eq_ignore_ascii_case("tb") {
         Some(TB)
-    } else if unit.eq_ignore_ascii_case("P") || unit.eq_ignore_ascii_case("PB") {
+    } else if unit.eq_ignore_ascii_case("p") || unit.eq_ignore_ascii_case("pb") {
         Some(PB)
-    } else if unit.eq_ignore_ascii_case("E") || unit.eq_ignore_ascii_case("EB") {
+    } else if unit.eq_ignore_ascii_case("e") || unit.eq_ignore_ascii_case("eb") {
         Some(EB)
     } else {
         None
@@ -593,24 +606,27 @@ fn unit_multiplier(unit: &str) -> Option<i64> {
 /// The returned `String` is the output — unavoidable allocation.
 #[must_use]
 pub fn format_size(size: i64) -> String {
+    const UNITS: &[(u64, &str)] = &[
+        (1u64 << 60, "EB"),
+        (1u64 << 50, "PB"),
+        (1u64 << 40, "TB"),
+        (1u64 << 30, "GB"),
+        (1u64 << 20, "MB"),
+        (1u64 << 10, "KB"),
+    ];
+
     let abs = size.unsigned_abs();
     let prefix = if size < 0 { "-" } else { "" };
 
-    if abs >= 1 << 60 {
-        format!("{}{:.1}EB", prefix, (abs as f64) / ((1u64 << 60) as f64))
-    } else if abs >= 1 << 50 {
-        format!("{}{:.1}PB", prefix, (abs as f64) / ((1u64 << 50) as f64))
-    } else if abs >= 1 << 40 {
-        format!("{}{:.1}TB", prefix, (abs as f64) / ((1u64 << 40) as f64))
-    } else if abs >= 1 << 30 {
-        format!("{}{:.1}GB", prefix, (abs as f64) / ((1u64 << 30) as f64))
-    } else if abs >= 1 << 20 {
-        format!("{}{:.1}MB", prefix, (abs as f64) / ((1u64 << 20) as f64))
-    } else if abs >= 1 << 10 {
-        format!("{}{:.1}KB", prefix, (abs as f64) / ((1u64 << 10) as f64))
-    } else {
-        format!("{}{}B", prefix, abs)
-    }
+    UNITS
+        .iter()
+        .find(|&&(threshold, _)| abs >= threshold)
+        .map_or_else(
+            || format!("{prefix}{abs}B"),
+            // Precision loss acceptable: only 1 decimal place displayed
+            #[allow(clippy::cast_precision_loss)]
+            |&(threshold, unit)| format!("{prefix}{:.1}{unit}", abs as f64 / threshold as f64),
+        )
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────
