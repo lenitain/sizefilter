@@ -21,7 +21,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sizefilter = "0.1.2"
+sizefilter = "0.2.0"
 ```
 
 ### Quick start

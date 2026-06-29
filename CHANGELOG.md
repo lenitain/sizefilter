@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-29
+
+### Changed
+
+- **`SizeFilter` fields are now private** ([C-STRUCT-PRIVATE](https://rust-lang.github.io/api-guidelines/interoperability.html#types-are-send-and-sync-where-possible-c-send-sync)):
+  - `op` and `bytes` fields are now private
+  - Added `op()` getter method (returns `SizeOp`)
+  - Added `bytes()` getter method (returns `i64`)
+  - `new()` constructor remains unchanged
+
+- **`SizeOp` implements `Hash`, `Ord`, `PartialOrd`** ([C-COMMON-TRAITS](https://rust-lang.github.io/api-guidelines/interoperability.html#commonly-used-types-should-be-the-same-c-common-traits)):
+  ```rust
+  use std::collections::HashSet;
+  use sizefilter::SizeOp;
+  
+  let ops = HashSet::from([SizeOp::Ge, SizeOp::Lt]);
+  assert!(ops.contains(&SizeOp::Ge));
+  ```
+
+### Migration Guide
+
+**Struct field access** (breaking):
+```rust
+// Before (0.1.x)
+let f: SizeFilter = ">=1GB".parse().unwrap();
+assert_eq!(f.op, SizeOp::Ge);
+assert_eq!(f.bytes, 1_073_741_824);
+
+// After (0.2.0)
+let f: SizeFilter = ">=1GB".parse().unwrap();
+assert_eq!(f.op(), SizeOp::Ge);
+assert_eq!(f.bytes(), 1_073_741_824);
+```
+
 ## Unreleased
 
 ### Changed
