@@ -1,203 +1,141 @@
-//! `sizefilter` — human-readable size string parsing, formatting, and filtering.
+//! `sizefilter` — human readable size parsing, formatting, filtering, and
+//! checked arithmetic.
 //!
-//! Handles strings like `">=1GB"`, `"<500KB"`, `"1024"` — parsing them into
-//! byte counts, formatting bytes back to human-readable, and applying
-//! comparison filters.
+//! Sizes are byte counts (`i64`, negative values allowed for deltas). Units are
+//! binary: 1 KiB = 1024 B. Parsing accepts `KB`/`MB`/… as legacy aliases for the
+//! binary units, because many filesystem tools conventionally use them that
+//! way. There is no decimal/SI mode.
 //!
-//! Unlike existing crates (`human-size`, `bytesize`, `parse-size`), this crate
-//! focuses on **filter operators** — the `SizeOp`/`SizeFilter` types that let
-//! you write `>=1GB` or `<500KB` as a single filter expression.
+//! # Design
 //!
-//! # Quick Start
+//! * Parsing is checked: no input can panic or silently wrap.
+//! * [`Size`]'s `Display` is the rounded, human-oriented form. It is lossy;
+//!   [`Size::to_exact_string`] is the canonical form that parses back to the
+//!   identical byte count.
+//! * [`format_size`] is that same human formatter, exposed as a function.
+//! * [`SizeFilter`] stores a byte threshold and uses the exact representation,
+//!   so config round trips never change a threshold.
+//!
+//! # Scope
+//!
+//! The crate models filesystem byte sizes and one comparison expression such
+//! as `>=1GiB`. Ranges are composed by the caller from two filters. It is not a
+//! general unit converter, query language, or I/O layer.
+//!
+//! # Quick start
 //!
 //! ```
 //! use sizefilter::prelude::*;
 //!
-//! // Parse a raw size
-//! assert_eq!(parse_size("1GB").unwrap(), GB);
+//! assert_eq!(parse_size("1.5GiB").unwrap(), 1_610_612_736);
 //!
-//! // Using the Size newtype
-//! let s: Size = "1.5GB".parse().unwrap();
-//! assert_eq!(s.bytes(), GB + GB / 2);
-//! assert_eq!(s.to_string(), "1.5GB");
+//! let size: Size = "1.5GiB".parse().unwrap();
+//! assert_eq!(size.bytes(), 1_610_612_736);
+//! assert_eq!(size.to_string(), "1.5GiB");
+//! assert_eq!(size.to_exact_string(), "1.5GiB");
 //!
-//! // Parse a filter expression
-//! let f: SizeFilter = ">=1GB".parse().unwrap();
-//! assert_eq!(f.op(), SizeOp::Ge);
-//! assert_eq!(f.bytes(), GB);
-//! assert!(f.matches(GB + 1));
+//! let filter: SizeFilter = ">=500MiB".parse().unwrap();
+//! assert!(filter.matches(1_000_000_000));
+//! assert!(!filter.matches(100_000_000));
+//! assert!(filter.matches_u64(u64::MAX));
 //! ```
 //!
-//! # Parsing sizes
-//!
-//! `parse_size` supports various unit suffixes:
+//! # Units
 //!
 //! ```
-//! use sizefilter::parse_size;
+//! use sizefilter::{parse_size, GIB, KIB, MIB};
 //!
-//! assert_eq!(parse_size("1024").unwrap(), 1024);       // raw bytes
-//! assert_eq!(parse_size("1B").unwrap(), 1);            // byte
-//! assert_eq!(parse_size("1KB").unwrap(), 1024);        // kilobyte
-//! assert_eq!(parse_size("1MB").unwrap(), 1_048_576);   // megabyte
-//! assert_eq!(parse_size("1GB").unwrap(), 1_073_741_824); // gigabyte
-//! assert_eq!(parse_size("1TB").unwrap(), 1_099_511_627_776); // terabyte
-//! assert_eq!(parse_size("1PB").unwrap(), 1_125_899_906_842_624); // petabyte
-//! assert_eq!(parse_size("1EB").unwrap(), 1_152_921_504_606_846_976); // exabyte
+//! assert_eq!(parse_size("1KiB").unwrap(), KIB);
+//! assert_eq!(parse_size("1KB").unwrap(), KIB);   // legacy binary alias
+//! assert_eq!(parse_size("1M").unwrap(), MIB);
+//! assert_eq!(parse_size("1.5GiB").unwrap(), 3 * GIB / 2);
 //! ```
 //!
-//! Short suffixes (`K`, `M`, `G`, `T`, `P`, `E`) also work:
+//! `KB` is not the SI kilobyte. Use `KiB` when the distinction matters.
+//!
+//! Fractions are truncated toward zero at byte granularity:
 //!
 //! ```
 //! use sizefilter::parse_size;
 //!
-//! assert_eq!(parse_size("1K").unwrap(), 1024);
-//! assert_eq!(parse_size("1M").unwrap(), 1_048_576);
-//! assert_eq!(parse_size("1G").unwrap(), 1_073_741_824);
-//! assert_eq!(parse_size("1T").unwrap(), 1_099_511_627_776);
-//! assert_eq!(parse_size("1P").unwrap(), 1_125_899_906_842_624);
-//! assert_eq!(parse_size("1E").unwrap(), 1_152_921_504_606_846_976);
+//! assert_eq!(parse_size("0.1KiB").unwrap(), 102);
+//! assert_eq!(parse_size("-1.5KiB").unwrap(), -1536);
 //! ```
 //!
-//! Negative sizes and decimals are supported:
+//! # Formatting
 //!
 //! ```
-//! use sizefilter::parse_size;
+//! use sizefilter::{format_size, Size, MIB};
 //!
-//! assert_eq!(parse_size("-1024").unwrap(), -1024);
-//! assert_eq!(parse_size("-1KB").unwrap(), -1024);
-//! assert_eq!(parse_size("0.5KB").unwrap(), 512);
-//! assert_eq!(parse_size("1.5GB").unwrap(), 1_610_612_736);
+//! assert_eq!(format_size(1536), "1.5KiB");
+//! assert_eq!(format_size(MIB - 1), "1.0MiB"); // rounding promotes the unit
+//!
+//! // `Display` is human-oriented and lossy.
+//! let odd = Size::from_bytes(1_048_575);
+//! assert_eq!(odd.to_string(), "1.0MiB");
+//!
+//! // The exact form round trips, even when no unit represents it neatly.
+//! assert_eq!(odd.to_exact_string(), "1048575B");
+//! assert_eq!(odd.to_exact_string().parse::<Size>().unwrap(), odd);
 //! ```
 //!
-//! # Formatting sizes
+//! # Unsigned sizes
 //!
-//! `format_size` converts bytes back to human-readable:
-//!
-//! ```
-//! use sizefilter::format_size;
-//!
-//! assert_eq!(format_size(0), "0B");
-//! assert_eq!(format_size(500), "500B");
-//! assert_eq!(format_size(1024), "1.0KB");
-//! assert_eq!(format_size(1_048_576), "1.0MB");
-//! assert_eq!(format_size(1_073_741_824), "1.0GB");
-//! assert_eq!(format_size(-1024), "-1.0KB");
-//! ```
-//!
-//! # Size newtype
-//!
-//! [`Size`] wraps `i64` with `FromStr` / `Display`:
+//! File metadata exposes `u64`. Convert with `TryFrom` or use the
+//! [`SizeFilter::matches_u64`] entry point:
 //!
 //! ```
-//! use sizefilter::Size;
+//! use sizefilter::{Size, SizeError, SizeFilter, MIB};
 //!
-//! let s: Size = "2GB".parse().unwrap();
-//! assert_eq!(s.bytes(), 2_147_483_648);
-//! assert_eq!(s.to_string(), "2.0GB");
-//!
-//! // Construct from constants
-//! use sizefilter::{GB, MB};
-//! let s = Size::from_mb(512);
-//! assert_eq!(s, Size::from_bytes(512 * MB));
-//!
-//! // Implements From<i64> and Into<i64>
-//! let bytes: i64 = s.into();
-//! assert_eq!(bytes, 512 * MB);
+//! assert_eq!(Size::try_from(1024u64).unwrap().bytes(), 1024);
+//! assert_eq!(Size::try_from(u64::MAX), Err(SizeError::Overflow));
+//! assert!(SizeFilter::ge(MIB).matches_u64(u64::MAX));
 //! ```
 //!
-//! # Arithmetic
-//!
-//! [`Size`] supports `+`, `-`, `*`, `/`, `Neg`, and their `Assign` variants.
-//! All operations work at the byte level, so units stay consistent:
+//! # Checked arithmetic
 //!
 //! ```
-//! use sizefilter::{Size, MB, KB};
+//! use sizefilter::{Size, MIB};
 //!
-//! let a = Size::from_mb(2);
-//! let b = Size::from_kb(512);
-//!
-//! assert_eq!((a + b).bytes(), 2_097_152i64 + 512 * KB);
-//! assert_eq!((a - b).bytes(), 2_097_152i64 - 512 * KB);
-//! assert_eq!((a * 3).bytes(), 6 * MB);
-//! assert_eq!((a / 2).bytes(), MB);
-//!
-//! // Mixed: i64 + Size
-//! assert_eq!((1024i64 + Size::from_kb(1)).bytes(), 2048);
+//! let a = Size::from_bytes(MIB);
+//! assert_eq!(a.checked_add(a), Some(Size::from_bytes(2 * MIB)));
+//! assert_eq!(Size::from_bytes(i64::MAX).checked_add(a), None);
 //! ```
 //!
-//! # Size filters with operators
+//! # Serde
 //!
-//! [`SizeFilter`] implements `FromStr` for ergonomic parsing:
-//!
-//! ```
-//! use sizefilter::SizeFilter;
-//!
-//! let f: SizeFilter = ">=1GB".parse().unwrap();
-//! assert_eq!(f.to_string(), ">=1.0GB");
-//! assert!(f.matches(2_000_000_000));
-//! assert!(!f.matches(500_000_000));
-//! ```
-//!
-//! Or use convenience constructors without importing [`SizeOp`]:
-//!
-//! ```
-//! use sizefilter::SizeFilter;
-//!
-//! let f = SizeFilter::ge(1_073_741_824);  // >=1GB
-//! assert!(f.matches(2_000_000_000));
-//!
-//! let f = SizeFilter::lt(524_288_000);    // <500MB
-//! assert!(!f.matches(1_000_000_000));
-//! ```
-//!
-//! Or use the free function:
-//!
-//! ```
-//! use sizefilter::{parse_size_filter, SizeOp};
-//!
-//! let f = parse_size_filter("<500KB").unwrap();
-//! assert_eq!(f.op(), SizeOp::Lt);
-//! ```
-//!
-//! # Serde support
-//!
-//! With the `serde` feature enabled, both [`Size`] and [`SizeFilter`]
-//! can be serialized and deserialized as human-readable strings:
+//! With the `serde` feature, [`Size`] and [`SizeFilter`] serialize to their
+//! canonical string and deserialize through their parsers. Round trips are
+//! exact.
 //!
 //! ```toml
 //! [dependencies]
-//! sizefilter = { version = "0.1", features = ["serde"] }
-//! ```
-//!
-//! ```ignore
-//! # #[cfg(feature = "serde")] {
-//! use sizefilter::{Size, SizeFilter};
-//! use serde::{Deserialize, Serialize};
-//!
-//! #[derive(Serialize, Deserialize)]
-//! struct Config {
-//!     max_log_size: SizeFilter,
-//!     min_file_size: Size,
-//! }
-//! # }
+//! sizefilter = { version = "0.3", features = ["serde"] }
 //! ```
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
+mod error;
+mod filter;
+mod format;
+mod op;
+mod parse;
 mod size;
+mod units;
 
-pub use size::*;
+pub use error::{SizeError, SizeResult};
+pub use filter::{SizeFilter, parse_size_filter};
+pub use format::format_size;
+pub use op::SizeOp;
+pub use parse::parse_size;
+pub use size::Size;
+pub use units::{EIB, GIB, KIB, MIB, PIB, TIB};
 
 /// Easy import of the crate's most common items.
-///
-/// ```
-/// use sizefilter::prelude::*;
-///
-/// let s: Size = "1GB".parse().unwrap();
-/// let f: SizeFilter = ">=500MB".parse().unwrap();
-/// ```
 pub mod prelude {
-    pub use crate::{EB, GB, KB, MB, PB, TB};
-    pub use crate::{Size, SizeError, SizeFilter, SizeOp, SizeResult};
-    pub use crate::{format_size, parse_size, parse_size_filter};
+    pub use crate::{
+        EIB, GIB, KIB, MIB, PIB, Size, SizeError, SizeFilter, SizeOp, SizeResult, TIB, format_size,
+        parse_size, parse_size_filter,
+    };
 }

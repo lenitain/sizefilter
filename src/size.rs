@@ -1,208 +1,34 @@
-//! Core types, constants, and parsing logic.
-//!
-//! All string constants in errors live in `.rodata` — no heap `String` allocation
-//! in error paths. `parse_size` avoids `to_uppercase()` by using byte-level
-//! case-insensitive comparison.
+//! The [`Size`] type and its checked arithmetic.
 
-use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
-// ── unit constants ───────────────────────────────────────────────────────────
+use crate::error::{SizeError, SizeResult};
+use crate::units::{EIB, GIB, KIB, MIB, PIB, TIB};
 
-/// Bytes in one kibibyte (2¹⁰).
-pub const KB: i64 = 1 << 10;
-/// Bytes in one mebibyte (2²⁰).
-pub const MB: i64 = 1 << 20;
-/// Bytes in one gibibyte (2³⁰).
-pub const GB: i64 = 1 << 30;
-/// Bytes in one tebibyte (2⁴⁰).
-pub const TB: i64 = 1 << 40;
-/// Bytes in one pebibyte (2⁵⁰).
-pub const PB: i64 = 1 << 50;
-/// Bytes in one exbibyte (2⁶⁰).
-pub const EB: i64 = 1 << 60;
-
-// ── SizeOp ───────────────────────────────────────────────────────────────────
-
-/// Size comparison operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SizeOp {
-    /// Greater than (`>`)
-    Gt,
-    /// Greater than or equal to (`>=`)
-    Ge,
-    /// Less than (`<`)
-    Lt,
-    /// Less than or equal to (`<=`)
-    Le,
-    /// Equal to (`=`)
-    Eq,
-}
-
-impl SizeOp {
-    /// All variants, in declaration order.
-    pub const ALL: [SizeOp; 5] = [SizeOp::Gt, SizeOp::Ge, SizeOp::Lt, SizeOp::Le, SizeOp::Eq];
-
-    /// Apply this operator to two values.
-    #[inline]
-    #[must_use]
-    pub fn applies(self, value: i64, threshold: i64) -> bool {
-        match self {
-            SizeOp::Gt => value > threshold,
-            SizeOp::Ge => value >= threshold,
-            SizeOp::Lt => value < threshold,
-            SizeOp::Le => value <= threshold,
-            SizeOp::Eq => value == threshold,
-        }
-    }
-}
-
-impl fmt::Display for SizeOp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            SizeOp::Gt => ">",
-            SizeOp::Ge => ">=",
-            SizeOp::Lt => "<",
-            SizeOp::Le => "<=",
-            SizeOp::Eq => "=",
-        })
-    }
-}
-
-// ── SizeFilter ───────────────────────────────────────────────────────────────
-
-/// A size filter with operator (e.g., `>=1GB`, `<500KB`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SizeFilter {
-    op: SizeOp,
-    bytes: i64,
-}
-
-impl SizeFilter {
-    /// Create a new filter from an operator and byte threshold.
-    #[inline]
-    #[must_use]
-    pub const fn new(op: SizeOp, bytes: i64) -> Self {
-        SizeFilter { op, bytes }
-    }
-
-    /// Get the comparison operator.
-    #[inline]
-    #[must_use]
-    pub const fn op(self) -> SizeOp {
-        self.op
-    }
-
-    /// Get the byte threshold.
-    #[inline]
-    #[must_use]
-    pub const fn bytes(self) -> i64 {
-        self.bytes
-    }
-
-    /// Filter: `value > threshold`.
-    #[inline]
-    #[must_use]
-    pub const fn gt(bytes: i64) -> Self {
-        SizeFilter {
-            op: SizeOp::Gt,
-            bytes,
-        }
-    }
-
-    /// Filter: `value >= threshold`.
-    #[inline]
-    #[must_use]
-    pub const fn ge(bytes: i64) -> Self {
-        SizeFilter {
-            op: SizeOp::Ge,
-            bytes,
-        }
-    }
-
-    /// Filter: `value < threshold`.
-    #[inline]
-    #[must_use]
-    pub const fn lt(bytes: i64) -> Self {
-        SizeFilter {
-            op: SizeOp::Lt,
-            bytes,
-        }
-    }
-
-    /// Filter: `value <= threshold`.
-    #[inline]
-    #[must_use]
-    pub const fn le(bytes: i64) -> Self {
-        SizeFilter {
-            op: SizeOp::Le,
-            bytes,
-        }
-    }
-
-    /// Filter: `value == threshold`.
-    #[inline]
-    #[must_use]
-    pub const fn eq(bytes: i64) -> Self {
-        SizeFilter {
-            op: SizeOp::Eq,
-            bytes,
-        }
-    }
-
-    /// Check whether `value` (in bytes) passes this filter.
-    #[inline]
-    #[must_use]
-    pub fn matches(self, value: i64) -> bool {
-        self.op.applies(value, self.bytes)
-    }
-}
-
-impl fmt::Display for SizeFilter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}", self.op, format_size(self.bytes))
-    }
-}
-
-impl FromStr for SizeFilter {
-    type Err = SizeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_size_filter(s)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for SizeFilter {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for SizeFilter {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        s.parse().map_err(serde::de::Error::custom)
-    }
-}
-
-// ── Size newtype ─────────────────────────────────────────────────────────────
-
-/// A byte size that can be parsed from / formatted to a human-readable string.
+/// A byte count that parses from and formats to a human readable string.
 ///
-/// # Examples
+/// Sizes are signed: negative values represent deltas. Arithmetic is checked;
+/// overflow panics deterministically through the operator traits and is
+/// reported through [`Size::checked_add`] and friends.
+///
+/// `Display` is the human-oriented, rounded form. It is lossy; use
+/// [`Size::to_exact_string`] when the output must parse back to the identical
+/// byte count. Filters and serde always use the exact form.
 ///
 /// ```
-/// use sizefilter::{Size, GB};
+/// use sizefilter::{Size, KIB, MIB};
 ///
-/// let s: Size = "1.5GB".parse().unwrap();
-/// assert_eq!(s.bytes(), 1_610_612_736);
-/// assert_eq!(s.to_string(), "1.5GB");
+/// let size: Size = "1.5KiB".parse().unwrap();
+/// assert_eq!(size.bytes(), 1536);
+/// assert_eq!(size.to_string(), "1.5KiB");
+/// assert_eq!(size.to_human(), "1.5KiB");
 ///
-/// // Arithmetic with constants
-/// assert_eq!(s, Size::from_bytes(GB + GB / 2));
+/// let odd = Size::from_bytes(1_610_612_737);
+/// assert_eq!(odd.to_exact_string(), "1610612737B");
+/// assert_eq!(odd.to_exact_string().parse::<Size>().unwrap(), odd);
+///
+/// assert_eq!(Size::from_bytes(MIB) + Size::from_bytes(KIB), Size::from_bytes(MIB + KIB));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Size(i64);
@@ -218,32 +44,88 @@ impl Size {
         Size(bytes)
     }
 
-    /// Create a `Size` from a quantity of kilobytes (binary: 1024).
+    /// Create a `Size` from a quantity of kibibytes (1024 bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the multiplication overflows.
     #[inline]
     #[must_use]
-    pub const fn from_kb(kb: i64) -> Self {
-        Size(kb * KB)
+    pub const fn from_kib(kib: i64) -> Self {
+        match kib.checked_mul(KIB) {
+            Some(bytes) => Size(bytes),
+            None => panic!("Size::from_kib overflow"),
+        }
     }
 
-    /// Create a `Size` from a quantity of megabytes (binary: 1024²).
+    /// Create a `Size` from a quantity of mebibytes (1024² bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the multiplication overflows.
     #[inline]
     #[must_use]
-    pub const fn from_mb(mb: i64) -> Self {
-        Size(mb * MB)
+    pub const fn from_mib(mib: i64) -> Self {
+        match mib.checked_mul(MIB) {
+            Some(bytes) => Size(bytes),
+            None => panic!("Size::from_mib overflow"),
+        }
     }
 
-    /// Create a `Size` from a quantity of gigabytes (binary: 1024³).
+    /// Create a `Size` from a quantity of gibibytes (1024³ bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the multiplication overflows.
     #[inline]
     #[must_use]
-    pub const fn from_gb(gb: i64) -> Self {
-        Size(gb * GB)
+    pub const fn from_gib(gib: i64) -> Self {
+        match gib.checked_mul(GIB) {
+            Some(bytes) => Size(bytes),
+            None => panic!("Size::from_gib overflow"),
+        }
     }
 
-    /// Create a `Size` from a quantity of terabytes (binary: 1024⁴).
+    /// Create a `Size` from a quantity of tebibytes (1024⁴ bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the multiplication overflows.
     #[inline]
     #[must_use]
-    pub const fn from_tb(tb: i64) -> Self {
-        Size(tb * TB)
+    pub const fn from_tib(tib: i64) -> Self {
+        match tib.checked_mul(TIB) {
+            Some(bytes) => Size(bytes),
+            None => panic!("Size::from_tib overflow"),
+        }
+    }
+
+    /// Create a `Size` from a quantity of pebibytes (1024⁵ bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the multiplication overflows.
+    #[inline]
+    #[must_use]
+    pub const fn from_pib(pib: i64) -> Self {
+        match pib.checked_mul(PIB) {
+            Some(bytes) => Size(bytes),
+            None => panic!("Size::from_pib overflow"),
+        }
+    }
+
+    /// Create a `Size` from a quantity of exbibytes (1024⁶ bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the multiplication overflows.
+    #[inline]
+    #[must_use]
+    pub const fn from_eib(eib: i64) -> Self {
+        match eib.checked_mul(EIB) {
+            Some(bytes) => Size(bytes),
+            None => panic!("Size::from_eib overflow"),
+        }
     }
 
     /// Return the raw byte count.
@@ -252,40 +134,133 @@ impl Size {
     pub const fn bytes(self) -> i64 {
         self.0
     }
+
+    /// Format the size for humans, using the same rounded form as
+    /// [`format_size`](crate::format_size).
+    ///
+    /// This is lossy; use [`Size::to_exact_string`] for a lossless form.
+    #[inline]
+    #[must_use]
+    pub fn to_human(self) -> String {
+        crate::format::format_size(self.0)
+    }
+
+    /// Format the size exactly, using the canonical representation that
+    /// [`Size::from_str`] parses back to the identical byte count.
+    ///
+    /// When no binary unit represents the value with at most two decimal
+    /// places, the result falls back to a byte count such as `"1048575B"`.
+    #[must_use]
+    pub fn to_exact_string(self) -> String {
+        let mut out = String::new();
+        crate::format::write_exact(&mut out, self.0).expect("writing to a String is infallible");
+        out
+    }
+
+    /// Checked addition.
+    #[inline]
+    #[must_use]
+    pub const fn checked_add(self, rhs: Size) -> Option<Size> {
+        match self.0.checked_add(rhs.0) {
+            Some(bytes) => Some(Size(bytes)),
+            None => None,
+        }
+    }
+
+    /// Checked subtraction.
+    #[inline]
+    #[must_use]
+    pub const fn checked_sub(self, rhs: Size) -> Option<Size> {
+        match self.0.checked_sub(rhs.0) {
+            Some(bytes) => Some(Size(bytes)),
+            None => None,
+        }
+    }
+
+    /// Checked multiplication by a scalar.
+    #[inline]
+    #[must_use]
+    pub const fn checked_mul(self, rhs: i64) -> Option<Size> {
+        match self.0.checked_mul(rhs) {
+            Some(bytes) => Some(Size(bytes)),
+            None => None,
+        }
+    }
+
+    /// Checked division by a scalar. Returns `None` for division by zero.
+    #[inline]
+    #[must_use]
+    pub const fn checked_div(self, rhs: i64) -> Option<Size> {
+        match self.0.checked_div(rhs) {
+            Some(bytes) => Some(Size(bytes)),
+            None => None,
+        }
+    }
+
+    /// Checked remainder by a scalar. Returns `None` for a zero divisor.
+    #[inline]
+    #[must_use]
+    pub const fn checked_rem(self, rhs: i64) -> Option<Size> {
+        match self.0.checked_rem(rhs) {
+            Some(bytes) => Some(Size(bytes)),
+            None => None,
+        }
+    }
+
+    /// Checked negation.
+    #[inline]
+    #[must_use]
+    pub const fn checked_neg(self) -> Option<Size> {
+        match self.0.checked_neg() {
+            Some(bytes) => Some(Size(bytes)),
+            None => None,
+        }
+    }
 }
 
 impl From<i64> for Size {
     #[inline]
-    fn from(v: i64) -> Self {
-        Size(v)
+    fn from(bytes: i64) -> Self {
+        Size(bytes)
     }
 }
 
 impl From<Size> for i64 {
     #[inline]
-    fn from(s: Size) -> Self {
-        s.0
+    fn from(size: Size) -> Self {
+        size.0
+    }
+}
+
+impl TryFrom<u64> for Size {
+    type Error = SizeError;
+
+    /// Convert an unsigned byte count, rejecting values above [`i64::MAX`].
+    fn try_from(bytes: u64) -> Result<Self, Self::Error> {
+        i64::try_from(bytes)
+            .map(Size)
+            .map_err(|_| SizeError::Overflow)
     }
 }
 
 impl fmt::Display for Size {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&format_size(self.0))
+        f.write_str(&self.to_human())
     }
 }
 
 impl FromStr for Size {
     type Err = SizeError;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_size(s).map(Size)
+    fn from_str(s: &str) -> SizeResult<Self> {
+        crate::parse::parse_size(s).map(Size)
     }
 }
 
 #[cfg(feature = "serde")]
 impl serde::Serialize for Size {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
+        serializer.collect_str(&self.to_exact_string())
     }
 }
 
@@ -297,409 +272,149 @@ impl<'de> serde::Deserialize<'de> for Size {
     }
 }
 
-// ── arithmetic ──────────────────────────────────────────────────────────────
+macro_rules! checked_op {
+    ($trait:ident, $method:ident, $checked:ident, $message:literal) => {
+        impl std::ops::$trait for Size {
+            type Output = Size;
 
-impl std::ops::Add for Size {
-    type Output = Size;
-    #[inline]
-    fn add(self, rhs: Size) -> Size {
-        Size(self.0 + rhs.0)
-    }
+            #[inline]
+            fn $method(self, rhs: Size) -> Size {
+                self.$checked(rhs)
+                    .expect(concat!("Size ", $message, " overflow"))
+            }
+        }
+
+        impl std::ops::$trait<i64> for Size {
+            type Output = Size;
+
+            #[inline]
+            fn $method(self, rhs: i64) -> Size {
+                self.$checked(Size(rhs))
+                    .expect(concat!("Size ", $message, " overflow"))
+            }
+        }
+
+        impl std::ops::$trait<Size> for i64 {
+            type Output = Size;
+
+            #[inline]
+            fn $method(self, rhs: Size) -> Size {
+                Size(self)
+                    .$checked(rhs)
+                    .expect(concat!("Size ", $message, " overflow"))
+            }
+        }
+
+        impl std::ops::$trait<Size> for &Size {
+            type Output = Size;
+
+            #[inline]
+            fn $method(self, rhs: Size) -> Size {
+                (*self)
+                    .$checked(rhs)
+                    .expect(concat!("Size ", $message, " overflow"))
+            }
+        }
+    };
 }
 
-impl std::ops::Add<i64> for Size {
-    type Output = Size;
-    #[inline]
-    fn add(self, rhs: i64) -> Size {
-        Size(self.0 + rhs)
-    }
-}
+checked_op!(Add, add, checked_add, "addition");
+checked_op!(Sub, sub, checked_sub, "subtraction");
 
-impl std::ops::Add<Size> for i64 {
-    type Output = Size;
-    #[inline]
-    fn add(self, rhs: Size) -> Size {
-        Size(self + rhs.0)
-    }
-}
+macro_rules! checked_assign {
+    ($trait:ident, $method:ident, $op:tt) => {
+        impl std::ops::$trait for Size {
+            #[inline]
+            fn $method(&mut self, rhs: Size) {
+                *self = *self $op rhs;
+            }
+        }
 
-impl std::ops::AddAssign for Size {
-    #[inline]
-    fn add_assign(&mut self, rhs: Size) {
-        self.0 += rhs.0;
-    }
-}
-
-impl std::ops::AddAssign<i64> for Size {
-    #[inline]
-    fn add_assign(&mut self, rhs: i64) {
-        self.0 += rhs;
-    }
-}
-
-impl std::ops::Sub for Size {
-    type Output = Size;
-    #[inline]
-    fn sub(self, rhs: Size) -> Size {
-        Size(self.0 - rhs.0)
-    }
-}
-
-impl std::ops::Sub<i64> for Size {
-    type Output = Size;
-    #[inline]
-    fn sub(self, rhs: i64) -> Size {
-        Size(self.0 - rhs)
-    }
-}
-
-impl std::ops::Sub<Size> for i64 {
-    type Output = Size;
-    #[inline]
-    fn sub(self, rhs: Size) -> Size {
-        Size(self - rhs.0)
-    }
-}
-
-impl std::ops::SubAssign for Size {
-    #[inline]
-    fn sub_assign(&mut self, rhs: Size) {
-        self.0 -= rhs.0;
-    }
-}
-
-impl std::ops::SubAssign<i64> for Size {
-    #[inline]
-    fn sub_assign(&mut self, rhs: i64) {
-        self.0 -= rhs;
-    }
+        impl std::ops::$trait<i64> for Size {
+            #[inline]
+            fn $method(&mut self, rhs: i64) {
+                *self = *self $op Size(rhs);
+            }
+        }
+    };
 }
 
 impl std::ops::Mul<i64> for Size {
     type Output = Size;
+
     #[inline]
     fn mul(self, rhs: i64) -> Size {
-        Size(self.0 * rhs)
+        self.checked_mul(rhs).expect("Size multiplication overflow")
     }
 }
 
 impl std::ops::Mul<Size> for i64 {
     type Output = Size;
+
     #[inline]
     fn mul(self, rhs: Size) -> Size {
-        Size(self * rhs.0)
-    }
-}
-
-impl std::ops::MulAssign<i64> for Size {
-    #[inline]
-    fn mul_assign(&mut self, rhs: i64) {
-        self.0 *= rhs;
+        rhs.checked_mul(self).expect("Size multiplication overflow")
     }
 }
 
 impl std::ops::Div<i64> for Size {
     type Output = Size;
+
     #[inline]
     fn div(self, rhs: i64) -> Size {
-        Size(self.0 / rhs)
+        self.checked_div(rhs)
+            .expect("Size division by zero or overflow")
+    }
+}
+
+impl std::ops::Rem<i64> for Size {
+    type Output = Size;
+
+    #[inline]
+    fn rem(self, rhs: i64) -> Size {
+        self.checked_rem(rhs)
+            .expect("Size remainder by zero or overflow")
+    }
+}
+
+impl std::ops::Neg for Size {
+    type Output = Size;
+
+    #[inline]
+    fn neg(self) -> Size {
+        self.checked_neg().expect("Size negation overflow")
+    }
+}
+
+impl std::ops::Neg for &Size {
+    type Output = Size;
+
+    #[inline]
+    fn neg(self) -> Size {
+        (*self).checked_neg().expect("Size negation overflow")
+    }
+}
+
+checked_assign!(AddAssign, add_assign, +);
+checked_assign!(SubAssign, sub_assign, -);
+
+impl std::ops::MulAssign<i64> for Size {
+    #[inline]
+    fn mul_assign(&mut self, rhs: i64) {
+        *self = *self * rhs;
     }
 }
 
 impl std::ops::DivAssign<i64> for Size {
     #[inline]
     fn div_assign(&mut self, rhs: i64) {
-        self.0 /= rhs;
-    }
-}
-
-impl std::ops::Rem<i64> for Size {
-    type Output = Size;
-    #[inline]
-    fn rem(self, rhs: i64) -> Size {
-        Size(self.0 % rhs)
+        *self = *self / rhs;
     }
 }
 
 impl std::ops::RemAssign<i64> for Size {
     #[inline]
     fn rem_assign(&mut self, rhs: i64) {
-        self.0 %= rhs;
-    }
-}
-
-impl std::ops::Neg for Size {
-    type Output = Size;
-    #[inline]
-    fn neg(self) -> Size {
-        Size(-self.0)
-    }
-}
-
-// ── SizeError ────────────────────────────────────────────────────────────────
-
-/// Errors that can occur during size parsing and formatting.
-///
-/// All variants carry zero heap-allocated data — error strings are
-/// `&'static str` literals in `.rodata`.
-///
-/// This enum is `#[non_exhaustive]` — new variants may be added in
-/// minor releases without breaking changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SizeError {
-    /// No operator found in filter string.
-    MissingOperator,
-    /// Unable to parse the numeric part of a size string.
-    InvalidNumber,
-    /// Unknown or unsupported size unit suffix.
-    UnknownUnit,
-    /// Empty input string.
-    EmptyInput,
-}
-
-impl fmt::Display for SizeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            SizeError::MissingOperator => {
-                "size filter must start with an operator (>=, >, <=, <, =)"
-            }
-            SizeError::InvalidNumber => "failed to parse number",
-            SizeError::UnknownUnit => "unknown size unit",
-            SizeError::EmptyInput => "empty input",
-        })
-    }
-}
-
-impl Error for SizeError {}
-
-/// `Result` type alias for `sizefilter` operations.
-pub type SizeResult<T> = Result<T, SizeError>;
-
-// ── parsing ──────────────────────────────────────────────────────────────────
-
-/// Parse a size filter string like `">=1GB"`, `"<500KB"`, `"=0"`.
-///
-/// Operator is required — returns error if missing.
-///
-/// # Errors
-///
-/// Returns [`SizeError::MissingOperator`] if no operator is found,
-/// or [`SizeError`] variants from size parsing.
-pub fn parse_size_filter(s: &str) -> SizeResult<SizeFilter> {
-    let s = s.trim();
-    let prefixes: &[(&str, SizeOp)] = &[
-        (">=", SizeOp::Ge),
-        ("<=", SizeOp::Le),
-        (">", SizeOp::Gt),
-        ("<", SizeOp::Lt),
-        ("=", SizeOp::Eq),
-    ];
-    let (op, rest) = prefixes
-        .iter()
-        .find_map(|&(prefix, op)| s.strip_prefix(prefix).map(|r| (op, r)))
-        .ok_or(SizeError::MissingOperator)?;
-    let bytes = parse_size(rest)?;
-    Ok(SizeFilter { op, bytes })
-}
-
-/// Parse human-readable size string to bytes.
-///
-/// Supports: `"1GB"`, `"500KB"`, `"1024"`, `"1B"`, `"1K"`, `"1M"`, `"1G"`, `"1T"`, `"1P"`, `"1E"`.
-/// Uses binary units (1KB = 1024 bytes).
-///
-/// No heap allocation during parsing — unit comparison is done via
-/// byte-level `eq_ignore_ascii_case`.
-///
-/// # Errors
-///
-/// Returns [`SizeError::InvalidNumber`] if the numeric part cannot be parsed,
-/// or [`SizeError::UnknownUnit`] if the unit suffix is not recognized.
-pub fn parse_size(size_str: &str) -> SizeResult<i64> {
-    let size_str = size_str.trim();
-    if size_str.is_empty() {
-        return Err(SizeError::EmptyInput);
-    }
-
-    // Find split between number and alphabetic unit.  Negative sign "-" at
-    // position 0 is part of the number, so skip it when searching.
-    let search_start = usize::from(size_str.starts_with('-'));
-    let alpha_pos = size_str[search_start..].find(|c: char| c.is_ascii_alphabetic());
-
-    let (num_part, unit) = match alpha_pos {
-        Some(pos) => size_str.split_at(search_start + pos),
-        None => (size_str, ""),
-    };
-
-    let num_part = num_part.trim();
-
-    // Reject purely alphabetic inputs (e.g., "abc") as invalid numbers
-    if num_part.is_empty() {
-        return Err(SizeError::InvalidNumber);
-    }
-
-    let multiplier = unit_multiplier(unit.trim()).ok_or(SizeError::UnknownUnit)?;
-
-    // Parse using integer arithmetic to avoid floating-point precision issues.
-    // Handle optional decimal point.
-    let (is_negative, num_str) = if let Some(rest) = num_part.strip_prefix('-') {
-        (true, rest)
-    } else {
-        (false, num_part)
-    };
-
-    let (int_part, frac_part, frac_digits) = if let Some(dot_pos) = num_str.find('.') {
-        let int_str = &num_str[..dot_pos];
-        let frac_str = &num_str[dot_pos + 1..];
-        let int_val: i64 = if int_str.is_empty() {
-            0
-        } else {
-            int_str.parse().map_err(|_| SizeError::InvalidNumber)?
-        };
-        let frac_val: i64 = frac_str.parse().map_err(|_| SizeError::InvalidNumber)?;
-        let frac_digits = u32::try_from(frac_str.len()).map_err(|_| SizeError::InvalidNumber)?;
-        (int_val, frac_val, frac_digits)
-    } else {
-        let int_val: i64 = num_str.parse().map_err(|_| SizeError::InvalidNumber)?;
-        (int_val, 0, 0)
-    };
-
-    // Compute: (int_part * 10^frac_digits + frac_part) * multiplier / 10^frac_digits
-    // Use i128 to avoid overflow during intermediate calculations.
-    let scale = 10i64.pow(frac_digits);
-    let numerator = i128::from(int_part) * i128::from(scale) + i128::from(frac_part);
-    let result = numerator * i128::from(multiplier) / i128::from(scale);
-
-    let result = i64::try_from(result).map_err(|_| SizeError::InvalidNumber)?;
-    Ok(if is_negative { -result } else { result })
-}
-
-/// Map a unit string to its byte multiplier, or `None` if unknown.
-///
-/// Comparison is ASCII case-insensitive — no allocation.
-fn unit_multiplier(unit: &str) -> Option<i64> {
-    // Use eq_ignore_ascii_case to avoid heap allocation from to_ascii_uppercase()
-    if unit.is_empty() || unit.eq_ignore_ascii_case("b") {
-        Some(1)
-    } else if unit.eq_ignore_ascii_case("k") || unit.eq_ignore_ascii_case("kb") {
-        Some(KB)
-    } else if unit.eq_ignore_ascii_case("m") || unit.eq_ignore_ascii_case("mb") {
-        Some(MB)
-    } else if unit.eq_ignore_ascii_case("g") || unit.eq_ignore_ascii_case("gb") {
-        Some(GB)
-    } else if unit.eq_ignore_ascii_case("t") || unit.eq_ignore_ascii_case("tb") {
-        Some(TB)
-    } else if unit.eq_ignore_ascii_case("p") || unit.eq_ignore_ascii_case("pb") {
-        Some(PB)
-    } else if unit.eq_ignore_ascii_case("e") || unit.eq_ignore_ascii_case("eb") {
-        Some(EB)
-    } else {
-        None
-    }
-}
-
-// ── formatting ───────────────────────────────────────────────────────────────
-
-/// Format size (in bytes) to human-readable string.
-///
-/// Uses binary units: `B`, `KB`, `MB`, `GB`, `TB`, `PB`, `EB`.
-/// The returned `String` is the output — unavoidable allocation.
-#[must_use]
-pub fn format_size(size: i64) -> String {
-    const UNITS: &[(u64, &str)] = &[
-        (1u64 << 60, "EB"),
-        (1u64 << 50, "PB"),
-        (1u64 << 40, "TB"),
-        (1u64 << 30, "GB"),
-        (1u64 << 20, "MB"),
-        (1u64 << 10, "KB"),
-    ];
-
-    let abs = size.unsigned_abs();
-    let prefix = if size < 0 { "-" } else { "" };
-
-    UNITS
-        .iter()
-        .find(|&&(threshold, _)| abs >= threshold)
-        .map_or_else(
-            || format!("{prefix}{abs}B"),
-            // Precision loss acceptable: only 1 decimal place displayed
-            #[allow(clippy::cast_precision_loss)]
-            |&(threshold, unit)| format!("{prefix}{:.1}{unit}", abs as f64 / threshold as f64),
-        )
-}
-
-// ── tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_pb() {
-        assert_eq!(parse_size("1PB").unwrap(), PB);
-        assert_eq!(parse_size("1P").unwrap(), PB);
-        assert_eq!(parse_size("1pb").unwrap(), PB);
-        assert_eq!(parse_size("2PB").unwrap(), 2 * PB);
-    }
-
-    #[test]
-    fn test_parse_eb() {
-        assert_eq!(parse_size("1EB").unwrap(), EB);
-        assert_eq!(parse_size("1E").unwrap(), EB);
-        assert_eq!(parse_size("1eb").unwrap(), EB);
-        assert_eq!(parse_size("2EB").unwrap(), 2 * EB);
-    }
-
-    #[test]
-    fn test_decimal_precision() {
-        // Test that integer arithmetic avoids floating-point precision issues
-        // 1.5GB should be exactly 1.5 * 1073741824 = 1610612736
-        assert_eq!(parse_size("1.5GB").unwrap(), 1_610_612_736);
-        assert_eq!(parse_size("0.5KB").unwrap(), 512);
-        assert_eq!(parse_size("2.25MB").unwrap(), 2_359_296); // 2.25 * 1048576
-        assert_eq!(parse_size("0.125GB").unwrap(), 134_217_728); // 0.125 * 1073741824
-    }
-
-    #[test]
-    fn test_negative_decimal() {
-        assert_eq!(parse_size("-1.5GB").unwrap(), -1_610_612_736);
-        assert_eq!(parse_size("-0.5KB").unwrap(), -512);
-    }
-
-    #[test]
-    fn test_large_decimal() {
-        // Test with large values that would overflow f64 precision
-        assert_eq!(parse_size("1.1PB").unwrap(), (1.1 * PB as f64) as i64);
-    }
-
-    #[test]
-    fn test_float_precision_loss() {
-        // This test demonstrates the precision characteristics of our
-        // integer-based parser vs f64 arithmetic.
-
-        // Case 1: Basic decimal parsing — both give same result
-        // 0.3GB = 0.3 * 1073741824 = 322122547.2 -> 322122547
-        let f64_result = (0.3 * GB as f64) as i64;
-        let int_result = parse_size("0.3GB").unwrap();
-        assert_eq!(f64_result, int_result); // both 322122547
-
-        // Case 2: The classic f64 failure — 0.1 + 0.2 != 0.3
-        assert_ne!(0.1_f64 + 0.2_f64, 0.3_f64); // false!
-
-        // Case 3: Integer truncation is deterministic
-        // 0.1GB = GB / 10 = 107374182 (truncated, 4 bytes less than exact)
-        let one_tenth = parse_size("0.1GB").unwrap();
-        assert_eq!(one_tenth, 107_374_182);
-        // Exact would be 107374182.4, but we truncate consistently
-
-        // Case 4: Deterministic behavior — same input always gives same output
-        assert_eq!(parse_size("0.1GB").unwrap(), parse_size("0.1GB").unwrap());
-        assert_eq!(parse_size("0.3GB").unwrap(), parse_size("0.3GB").unwrap());
-
-        // Case 5: Our parser handles various precisions correctly
-        assert_eq!(parse_size("0.001GB").unwrap(), 1_073_741); // truncated
-        assert_eq!(parse_size("0.0001GB").unwrap(), 107_374); // truncated
-        assert_eq!(parse_size("0.5GB").unwrap(), GB / 2); // exact!
+        *self = *self % rhs;
     }
 }
